@@ -1,0 +1,169 @@
+/*
+The code calculates the acceleration and brake pedals' positions, RPM, current gear, temperature and the laptime
+*/
+
+int rpm = 0, gear = 0, brake = 0, acceleration = 0, sensorValue1 = 0, sensorValue2 = 0;
+unsigned long count = 0, lastmillis = 0;
+volatile int half_revolutions = 0;
+unsigned long debounceDelay = 200;    // the debounce time; 
+unsigned long lastDebounceTime = 0;  // the last time the gear was changed
+unsigned long lastTransmit = 0;     // the last time the $RC2 string was transmitted
+int transmitRate = 50;             // transmit the $RC2 string every * milliseconds
+int RPMupdate = 100;              // update the RPM counter every * milliseconds
+String readString;               // used in changing the settings with serial commands
+
+/* variables of the laptimer */
+float second =  1000;             // 1000 milliseconds in a second
+float lapTime = 0;               // the variable that will be passed in the $RC string
+long lapTimeDebounce = 1000;    // how much time in milliseconds must pass before reading another pass over the line
+long lapMillis = 0;            // How long has it been since the last time the sensor was HIGH
+long lapMillis2 = 0;          // How long has it been since the last time the sensor was HIGH (for 2+ sectors)
+int sectors = 1;             // the number of split-lines
+int line = 0;               // the number of times you passed over the line
+
+
+void setup(){
+  attachInterrupt(0, rpm_fan, RISING); // attach an interrupt on pin number 0 - physical pin No.2
+  Serial.begin(9600);       // set the serial baudrate to 9600
+  pinMode(A0, INPUT);      // acceleration
+  pinMode(A1, INPUT);     // brake
+  pinMode(A3, INPUT);    // temperature
+  pinMode(10, INPUT);   // Laptime
+  pinMode(11, INPUT);  // gear +
+  pinMode(12, INPUT); // gear -
+  
+}
+void loop(){
+  while (Serial.available()) {      // loop that runs only when serial data is receiver by the Arduino
+   delay(10);  
+   if (Serial.available() >0) {
+     char c = Serial.read();     //gets one byte from serial buffer
+     readString += c;           //makes the string readString (1st byte + second byte + third byte + ...
+   } 
+ }
+ int a=readString[0];         // makes the first byte receiver an integer and stores it in the variable "a"
+ int b=readString[1];
+ int c=readString[2];
+  
+ if (readString.length()>0) {         // if there is something in the receiving serial of the Arduino  
+   if (a==49 && b==49){gear=0;}      //change the settings based on the numbers received 
+   if (a==49 && b==50){gear=1;}     // the numbers that a and b are compared to are the ASCII values of 1, 2, 3, 4 and 5
+   if (a==50 && b==49){sectors=1;}
+   if (a==50 && b==50){sectors=2;}
+   if (a==50 && b==51){sectors=3;}
+   if (a==50 && b==52){sectors=4;}
+   if (a==51 && b==49){RPMupdate=20;}
+   if (a==51 && b==50){RPMupdate=50;}
+   if (a==51 && b==51){RPMupdate=100;}
+   if (a==51 && b==52){RPMupdate=200;}
+   if (a==52 && b==49){transmitRate=20;}
+   if (a==52 && b==50){transmitRate=50;}
+   if (a==52 && b==51){transmitRate=100;}
+   if (a==52 && b==52){transmitRate=200;}
+   if (a==53 && b==49){debounceDelay=100;}
+   if (a==53 && b==50){debounceDelay=150;}
+   if (a==53 && b==51){debounceDelay=200;}
+   if (a==53 && b==52){debounceDelay=250;}   
+ }
+  
+ readString="";     // empties the string variable
+ /*
+ Serial.println(gear);
+ Serial.println(RPMupdate);
+ Serial.println(transmitRate);
+ Serial.println(debounceDelay);
+ */
+  if (sectors == 1){
+    if ((millis() - lapMillis) > lapTimeDebounce && digitalRead(10) == HIGH){  // if the lap time sensor is triggered and enough time has passed since the last trigger (for debounceing)
+      lapTime = time();       // calculate how many seconds have passed
+      lapMillis = millis();  //reset the last time the sensor was triggered
+    }
+  }
+  if (sectors > 1){
+    if ((millis() - lapMillis2) > lapTimeDebounce && digitalRead(10) == HIGH){  // if the lap time sensor is triggered and enough time has passed since the last trigger (for debounceing)
+      line = line + 1;              // a split line was crossed
+      if (line == (sectors +1)){   // if enough split lines have been crossed
+        lapTime = time();         // calculate how many seconds have passed since crossing the start/finish line
+        lapMillis = millis();    //reset the last time that the start/finish line was crossed
+        line = 0;               // reset the split lines
+      }
+      lapMillis2 = millis();  // reset the last time that the sensor was triggered
+    }
+  }
+
+  if ((millis() - lastDebounceTime) > debounceDelay && digitalRead(11) == HIGH){   // if the gear+ sensor has been triggered and sufficient time has passed since last trigger
+    gear += 1;
+    if (gear>6){  // if you are in sixth gear and trigger the gear+ sensor the display remains 6
+      gear=6;
+    }  
+    lastDebounceTime = millis();    
+  }
+  if ((millis() - lastDebounceTime) > debounceDelay && digitalRead(12) == HIGH){
+    gear -= 1;
+    if (gear<1){  // if you are in first gear and trigger the gear- sensor the display remains 1
+     gear=1;
+    }
+    lastDebounceTime = millis();    // reset the time when the last gear was changed    
+  }  
+  
+  /* //temperature reading
+  int reading = analogRead(2);  // converting that reading to voltage, for 3.3v Arduino use 3.3
+  float voltage = reading * 5.0;
+  voltage /= 1024.0; 
+  float temperatureC = (voltage - 0.5) * 100 ;  //converting from 10 mv per degree wit 500 mV offset to degrees ((voltage - 500mV) times 100)                                           
+  */
+  sensorValue1 = analogRead(A0);
+  sensorValue2 = analogRead(A1);
+  acceleration = map(sensorValue1, 0, 1023, 0, 100);  //maps the input value of 0-1023 to 0-100
+  brake = map(sensorValue2, 0, 1023, 0, 100);        //maps the input value of 0-1023 to 0-100
+  
+  if (millis() - lastmillis >= RPMupdate){    // Update every one hundredth of a second.
+    detachInterrupt(0);					     // Disable interrupt when calculating
+    rpm = half_revolutions * 60; 		    // Convert frequency to RPM, note: this works for one interruption per full rotation. For two interrupts per full rotation use half_revolutions * 30.
+    half_revolutions = 0;				   // Restart the RPM counter
+    lastmillis = millis();				  // Update lasmillis
+    attachInterrupt(0, rpm_fan, RISING); // enable interrupt
+  }
+  if (millis() - lastTransmit >= transmitRate) {         // send the $RC2 string every *transmitRate* milliseconds
+    String buffer = "RC2,," + String(count) + ",,,," + rpm + "," + gear + "," + acceleration + "," + brake + /*"," + temperatureC + */"," + String(lapTime) + ",,,,,"; // construct the $RC2 string using the variables and accounting for the format RaceChrono asks for
+    String checksum = String (checkSum(buffer), HEX);  // calculate the checksum of the RC2 string
+    
+    char crc = checkSum (buffer);
+    String data = "$" + buffer + "*";
+    Serial.print (data);
+    if (crc<16){           // if the HEX value of the checksum is one character, add "0" in front
+     Serial.print ("0"); 
+    }
+    Serial.println (checksum);
+    
+    if (count == 65535){
+      count = 0;                 // reset the counter variable when it reaches 65535 (the max value an int can hold)
+    }
+    else
+      count+=1;               // increment the count variable
+    lastTransmit = millis(); // reset the time when the last $RC2 string was transmitted
+  }  
+
+  
+}
+
+/* function that calculates the NMEA checksum and returns the value */
+char checkSum(String chars) {
+  char check = 0;
+  for (int c = 0; c < chars.length(); c++) {
+    check = char(check ^ chars.charAt(c));
+    }
+  return check;
+}
+
+/* function for the RPM counter */
+void rpm_fan(){
+ half_revolutions++; 
+}
+
+/* function for the timer */
+float time(){
+  long timeNow = (millis() - lapMillis);    // calculate how many milliseconds took to do a lap
+  float seconds = timeNow / second;        // calculate how many seconds (with decimals) is the amount of milliseconds
+  return seconds;                         // return the value as a float
+}
